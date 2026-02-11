@@ -1,0 +1,59 @@
+---
+# Service pour etcd
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd-metrics
+  namespace: kube-system
+  labels:
+    app: etcd
+    component: etcd
+spec:
+  clusterIP: None  # Headless service
+  ports:
+  - name: metrics
+    port: 2379
+    protocol: TCP
+    targetPort: 2379
+  selector:
+    component: etcd
+  type: ClusterIP
+
+---
+# ServiceMonitor pour etcd avec configuration TLS complète
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: etcd-custom
+  namespace: monitoring
+  labels:
+    app: etcd
+    release: kube-prometheus-stack  # Important pour que Prometheus le découvre
+spec:
+  namespaceSelector:
+    matchNames:
+    - kube-system
+  selector:
+    matchLabels:
+      component: etcd
+  endpoints:
+  - port: metrics
+    scheme: https
+    interval: 30s
+    # ✅ Configuration TLS complète
+    tlsConfig:
+      # Certificats clients pour authentification mTLS
+      ca:
+        secret:
+          name: etcd-certs
+          key: ca.crt
+      cert:
+        secret:
+          name: etcd-certs
+          key: client.crt
+      keySecret:
+        name: etcd-certs
+        key: client.key
+      # Accepter certificat auto-signé du serveur
+      insecureSkipVerify: true
+      serverName: localhost
