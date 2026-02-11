@@ -1,0 +1,300 @@
+# Configuration Helm pour kube-prometheus-stack
+# VERSION DÉFINITIVE - Générée automatiquement puis corrigée
+# Cluster on-premises avec 3 masters et 3 workers
+# 
+# Installation :
+# helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#   --namespace monitoring \
+#   --create-namespace \
+#   --values 06-helm-values.yaml
+#
+# Mise à jour :
+# helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#   --namespace monitoring \
+#   --values 06-helm-values.yaml
+
+# ==============================================================================
+# PROMETHEUS SERVER
+# ==============================================================================
+prometheus:
+  # ✅ Service en LoadBalancer
+  service:
+    type: LoadBalancer
+  
+  prometheusSpec:
+    retention: 15d
+    retentionSize: "18GB"
+    
+    # ✅ Monter le secret des certificats etcd
+    secrets:
+    - etcd-certs
+    
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+    
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: nfs-client
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi
+    
+    scrapeInterval: "30s"
+    scrapeTimeout: "10s"
+    evaluationInterval: "30s"
+    
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+    
+    # ✅ Scrape configs pour composants écoutant sur 127.0.0.1
+    additionalScrapeConfigs:
+    
+    # kube-controller-manager sur 127.0.0.1:10257
+    - job_name: 'kube-controller-manager-localhost'
+      honor_labels: true
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - kube-system
+      scheme: https
+      tls_config:
+        insecure_skip_verify: true
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_component]
+        action: keep
+        regex: kube-controller-manager
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: __address__
+        replacement: ${1}:10257
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      - target_label: job
+        replacement: kube-controller-manager
+    
+    # kube-scheduler sur 127.0.0.1:10259
+    - job_name: 'kube-scheduler-localhost'
+      honor_labels: true
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - kube-system
+      scheme: https
+      tls_config:
+        insecure_skip_verify: true
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_component]
+        action: keep
+        regex: kube-scheduler
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: __address__
+        replacement: ${1}:10259
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      - target_label: job
+        replacement: kube-scheduler
+    
+    # kube-proxy sur 127.0.0.1:10249
+    - job_name: 'kube-proxy-localhost'
+      honor_labels: true
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - kube-system
+      scheme: http
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_k8s-app]
+        action: keep
+        regex: kube-proxy
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: __address__
+        replacement: ${1}:10249
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      - target_label: job
+        replacement: kube-proxy
+
+# ==============================================================================
+# ALERTMANAGER
+# ==============================================================================
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: nfs-client
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+    
+    retention: 120h
+
+# ==============================================================================
+# GRAFANA - CORRECTION DATASOURCE
+# ==============================================================================
+grafana:
+  enabled: true
+  adminPassword: "admin"
+  
+  # ✅ Définir Prometheus comme datasource par défaut
+  defaultDatasourceEnabled: true
+  
+  # ✅ Service en LoadBalancer
+  service:
+    type: LoadBalancer
+  
+  persistence:
+    enabled: true
+    storageClassName: nfs-client
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+  
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  
+  # ✅ CORRECTION CRITIQUE : Datasource avec URL DNS complète
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - name: Prometheus
+        type: prometheus
+        # URL complète avec .svc pour résolution DNS correcte
+        url: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+        access: proxy
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: 30s
+          queryTimeout: 60s
+          httpMethod: POST
+        uid: prometheus
+  
+  # ✅ Configuration des dashboards avec la datasource correcte
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+# ==============================================================================
+# COMPOSANTS DE BASE
+# ==============================================================================
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
+
+prometheusOperator:
+  enabled: true
+
+# ==============================================================================
+# MONITORING DU CONTROL PLANE
+# Configuration détectée automatiquement pour votre cluster
+# ==============================================================================
+
+kubeApiServer:
+  enabled: true
+
+kubelet:
+  enabled: true
+  namespace: kube-system
+  
+  serviceMonitor:
+    https: true
+    insecureSkipVerify: true
+    cAdvisor: true
+    probes: true
+    resource: true
+    resourcePath: "/metrics/resource"
+
+kubeControllerManager:
+  enabled: false  # ❌ Désactivé car écoute sur 127.0.0.1 (utilise additionalScrapeConfigs)
+
+kubeScheduler:
+  enabled: false  # ❌ Désactivé car écoute sur 127.0.0.1 (utilise additionalScrapeConfigs)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ETCD - ServiceMonitor désactivé (on va le créer manuellement)
+# ──────────────────────────────────────────────────────────────────────────────
+kubeEtcd:
+  enabled: false  # ❌ Désactivé - ServiceMonitor créé manuellement avec certificats
+
+kubeProxy:
+  enabled: false  # ❌ Désactivé car écoute sur 127.0.0.1 (utilise additionalScrapeConfigs)
+
+coreDns:
+  enabled: true
+  service:
+    port: 9153
+    targetPort: 9153
+
+# ==============================================================================
+# RÈGLES D'ALERTING
+# ==============================================================================
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: true
+    configReloaders: true
+    general: true
+    k8s: true
+    kubeApiserver: true
+    kubeApiserverAvailability: true
+    kubeApiserverSlos: true
+    kubelet: true
+    kubeProxy: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeSchedulerAlerting: true
+    kubeSchedulerRecording: true
+    kubeStateMetrics: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true
