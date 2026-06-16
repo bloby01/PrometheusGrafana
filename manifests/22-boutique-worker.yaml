@@ -1,0 +1,56 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: production
+  labels:
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: bloby01/boutique-worker:v1
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 8083
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: production
+  labels:
+    app: worker
+spec:
+  selector:
+    app: worker
+  ports:
+    - name: metrics
+      port: 8083
+      targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: worker
+  namespace: production
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: worker
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
