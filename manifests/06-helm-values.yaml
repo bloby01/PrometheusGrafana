@@ -40,7 +40,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: nfs-client
+          storageClassName: local-path
           accessModes:
             - ReadWriteOnce
           resources:
@@ -144,7 +144,7 @@ alertmanager:
     storage:
       volumeClaimTemplate:
         spec:
-          storageClassName: nfs-client
+          storageClassName: local-path
           accessModes:
             - ReadWriteOnce
           resources:
@@ -169,7 +169,7 @@ grafana:
   
   persistence:
     enabled: true
-    storageClassName: nfs-client
+    storageClassName: local-path
     accessModes:
       - ReadWriteOnce
     size: 10Gi
