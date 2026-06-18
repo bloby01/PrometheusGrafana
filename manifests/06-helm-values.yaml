@@ -161,7 +161,7 @@ grafana:
   adminPassword: "admin"
   
   # ✅ Définir Prometheus comme datasource par défaut
-  defaultDatasourceEnabled: true
+  defaultDatasourceEnabled: false
   
   # ✅ Service en LoadBalancer
   service:
