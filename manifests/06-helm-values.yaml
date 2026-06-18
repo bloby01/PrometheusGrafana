@@ -93,11 +93,11 @@ grafana:
   enabled: true
   adminPassword: "admin"
 
-  # La datasource Prometheus par defaut est definie manuellement plus bas ;
-  # on desactive donc celle que le chart creerait automatiquement, sinon
-  # deux datasources seraient marquees "default" et Grafana refuserait de
-  # demarrer.
-  defaultDatasourceEnabled: false
+  # La datasource Prometheus (et Alertmanager) est fournie automatiquement par
+  # le chart via son sidecar : une ConfigMap etiquetee grafana_datasource est
+  # creee et injectee dynamiquement dans Grafana. Il ne faut donc PAS declarer
+  # de datasource manuelle ici — cela creerait deux datasources marquees
+  # "default" et Grafana refuserait de demarrer.
 
   # Acces par port-forward (pas de LoadBalancer sur Minikube).
   service:
@@ -117,23 +117,6 @@ grafana:
     limits:
       cpu: 500m
       memory: 512Mi
-
-  # Datasource Prometheus declaree explicitement (URL DNS complete, uid stable).
-  datasources:
-    datasources.yaml:
-      apiVersion: 1
-      datasources:
-      - name: Prometheus
-        type: prometheus
-        url: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
-        access: proxy
-        isDefault: true
-        editable: false
-        jsonData:
-          timeInterval: 30s
-          queryTimeout: 60s
-          httpMethod: POST
-        uid: prometheus
 
   # Provider de dashboards (permet d'ajouter des dashboards par fichier).
   dashboardProviders:
