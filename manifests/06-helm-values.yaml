@@ -1,42 +1,43 @@
 # Configuration Helm pour kube-prometheus-stack
-# VERSION DÉFINITIVE - Générée automatiquement puis corrigée
-# Cluster on-premises avec 3 masters et 3 workers
-# 
+# Profil : FORMATION / MINIKUBE (poste de travail, cluster jetable)
+#
+# Ce fichier est volontairement allege par rapport a une configuration de
+# production on-premises : pas de surveillance du control plane (etcd,
+# scheduler, controller-manager, kube-proxy) car ces composants ne sont pas
+# exposes de la meme facon sur Minikube, ressources reduites, services en
+# ClusterIP (acces par port-forward).
+#
 # Installation :
 # helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-#   --namespace monitoring \
-#   --create-namespace \
-#   --values 06-helm-values.yaml
+#   --namespace monitoring --create-namespace \
+#   --values manifests/06-helm-values.yaml
 #
-# Mise à jour :
+# Mise a jour :
 # helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-#   --namespace monitoring \
-#   --values 06-helm-values.yaml
+#   --namespace monitoring --values manifests/06-helm-values.yaml
 
 # ==============================================================================
 # PROMETHEUS SERVER
 # ==============================================================================
 prometheus:
-  # ✅ Service en LoadBalancer
+  # Acces par port-forward (Minikube n'a pas de LoadBalancer natif).
   service:
-    type: LoadBalancer
-  
+    type: ClusterIP
+
   prometheusSpec:
-    retention: 15d
-    retentionSize: "18GB"
-    
-    # ✅ Monter le secret des certificats etcd
-    secrets:
-    - etcd-certs
-    
+    # Retention courte : suffisant pour une formation, economise le disque.
+    retention: 3d
+    retentionSize: "4GB"
+
+    # Ressources adaptees a un poste de formation.
     resources:
       requests:
-        cpu: 500m
-        memory: 2Gi
+        cpu: 250m
+        memory: 512Mi
       limits:
-        cpu: 2000m
-        memory: 4Gi
-    
+        cpu: 1000m
+        memory: 1Gi
+
     storageSpec:
       volumeClaimTemplate:
         spec:
@@ -45,88 +46,20 @@ prometheus:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 20Gi
-    
+              storage: 5Gi
+
     scrapeInterval: "30s"
     scrapeTimeout: "10s"
     evaluationInterval: "30s"
-    
+
+    # Selectors vides : Prometheus decouvre TOUS les ServiceMonitor du cluster,
+    # quel que soit leur namespace ou leur label. Pratique en formation.
     serviceMonitorSelector: {}
     serviceMonitorNamespaceSelector: {}
     podMonitorSelector: {}
     podMonitorNamespaceSelector: {}
     ruleSelector: {}
     ruleNamespaceSelector: {}
-    
-    # ✅ Scrape configs pour composants écoutant sur 127.0.0.1
-    additionalScrapeConfigs:
-    
-    # kube-controller-manager sur 127.0.0.1:10257
-    - job_name: 'kube-controller-manager-localhost'
-      honor_labels: true
-      kubernetes_sd_configs:
-      - role: pod
-        namespaces:
-          names:
-          - kube-system
-      scheme: https
-      tls_config:
-        insecure_skip_verify: true
-      relabel_configs:
-      - source_labels: [__meta_kubernetes_pod_label_component]
-        action: keep
-        regex: kube-controller-manager
-      - source_labels: [__meta_kubernetes_pod_node_name]
-        target_label: __address__
-        replacement: ${1}:10257
-      - source_labels: [__meta_kubernetes_pod_node_name]
-        target_label: node
-      - target_label: job
-        replacement: kube-controller-manager
-    
-    # kube-scheduler sur 127.0.0.1:10259
-    - job_name: 'kube-scheduler-localhost'
-      honor_labels: true
-      kubernetes_sd_configs:
-      - role: pod
-        namespaces:
-          names:
-          - kube-system
-      scheme: https
-      tls_config:
-        insecure_skip_verify: true
-      relabel_configs:
-      - source_labels: [__meta_kubernetes_pod_label_component]
-        action: keep
-        regex: kube-scheduler
-      - source_labels: [__meta_kubernetes_pod_node_name]
-        target_label: __address__
-        replacement: ${1}:10259
-      - source_labels: [__meta_kubernetes_pod_node_name]
-        target_label: node
-      - target_label: job
-        replacement: kube-scheduler
-    
-    # kube-proxy sur 127.0.0.1:10249
-    - job_name: 'kube-proxy-localhost'
-      honor_labels: true
-      kubernetes_sd_configs:
-      - role: pod
-        namespaces:
-          names:
-          - kube-system
-      scheme: http
-      relabel_configs:
-      - source_labels: [__meta_kubernetes_pod_label_k8s-app]
-        action: keep
-        regex: kube-proxy
-      - source_labels: [__meta_kubernetes_pod_node_name]
-        target_label: __address__
-        replacement: ${1}:10249
-      - source_labels: [__meta_kubernetes_pod_node_name]
-        target_label: node
-      - target_label: job
-        replacement: kube-proxy
 
 # ==============================================================================
 # ALERTMANAGER
@@ -135,12 +68,12 @@ alertmanager:
   alertmanagerSpec:
     resources:
       requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
         cpu: 100m
         memory: 128Mi
-      limits:
-        cpu: 200m
-        memory: 256Mi
-    
+
     storage:
       volumeClaimTemplate:
         spec:
@@ -149,47 +82,49 @@ alertmanager:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 10Gi
-    
+              storage: 2Gi
+
     retention: 120h
 
 # ==============================================================================
-# GRAFANA - CORRECTION DATASOURCE
+# GRAFANA
 # ==============================================================================
 grafana:
   enabled: true
   adminPassword: "admin"
-  
-  # ✅ Définir Prometheus comme datasource par défaut
+
+  # La datasource Prometheus par defaut est definie manuellement plus bas ;
+  # on desactive donc celle que le chart creerait automatiquement, sinon
+  # deux datasources seraient marquees "default" et Grafana refuserait de
+  # demarrer.
   defaultDatasourceEnabled: false
-  
-  # ✅ Service en LoadBalancer
+
+  # Acces par port-forward (pas de LoadBalancer sur Minikube).
   service:
-    type: LoadBalancer
-  
+    type: ClusterIP
+
   persistence:
     enabled: true
     storageClassName: local-path
     accessModes:
       - ReadWriteOnce
-    size: 10Gi
-  
+    size: 2Gi
+
   resources:
     requests:
-      cpu: 250m
-      memory: 512Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
       cpu: 500m
-      memory: 1Gi
-  
-  # ✅ CORRECTION CRITIQUE : Datasource avec URL DNS complète
+      memory: 512Mi
+
+  # Datasource Prometheus declaree explicitement (URL DNS complete, uid stable).
   datasources:
     datasources.yaml:
       apiVersion: 1
       datasources:
       - name: Prometheus
         type: prometheus
-        # URL complète avec .svc pour résolution DNS correcte
         url: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
         access: proxy
         isDefault: true
@@ -199,8 +134,8 @@ grafana:
           queryTimeout: 60s
           httpMethod: POST
         uid: prometheus
-  
-  # ✅ Configuration des dashboards avec la datasource correcte
+
+  # Provider de dashboards (permet d'ajouter des dashboards par fichier).
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
@@ -215,7 +150,7 @@ grafana:
           path: /var/lib/grafana/dashboards/default
 
 # ==============================================================================
-# COMPOSANTS DE BASE
+# COMPOSANTS DE BASE (utiles et legers, on les garde)
 # ==============================================================================
 nodeExporter:
   enabled: true
@@ -227,17 +162,18 @@ prometheusOperator:
   enabled: true
 
 # ==============================================================================
-# MONITORING DU CONTROL PLANE
-# Configuration détectée automatiquement pour votre cluster
+# CONTROL PLANE
+# Sur Minikube, le control plane n'est pas expose comme sur un cluster
+# on-premises : on desactive sa surveillance pour eviter des cibles et des
+# alertes definitivement rouges. Seuls l'API server, le kubelet et CoreDNS,
+# qui fonctionnent sur Minikube, restent actifs.
 # ==============================================================================
-
 kubeApiServer:
   enabled: true
 
 kubelet:
   enabled: true
   namespace: kube-system
-  
   serviceMonitor:
     https: true
     insecureSkipVerify: true
@@ -246,35 +182,29 @@ kubelet:
     resource: true
     resourcePath: "/metrics/resource"
 
-kubeControllerManager:
-  enabled: false  # ❌ Désactivé car écoute sur 127.0.0.1 (utilise additionalScrapeConfigs)
-
-kubeScheduler:
-  enabled: false  # ❌ Désactivé car écoute sur 127.0.0.1 (utilise additionalScrapeConfigs)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ETCD - ServiceMonitor désactivé (on va le créer manuellement)
-# ──────────────────────────────────────────────────────────────────────────────
-kubeEtcd:
-  enabled: false  # ❌ Désactivé - ServiceMonitor créé manuellement avec certificats
-
-kubeProxy:
-  enabled: false  # ❌ Désactivé car écoute sur 127.0.0.1 (utilise additionalScrapeConfigs)
-
 coreDns:
   enabled: true
-  service:
-    port: 9153
-    targetPort: 9153
+
+# Composants du control plane non exposes proprement sur Minikube : desactives.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
 
 # ==============================================================================
-# RÈGLES D'ALERTING
+# REGLES D'ALERTING
+# On conserve les regles pertinentes sur Minikube et on desactive celles qui
+# visent des composants du control plane absents (etcd, scheduler, kube-proxy),
+# pour ne pas afficher d'alertes rouges permanentes sans objet.
 # ==============================================================================
 defaultRules:
   create: true
   rules:
     alertmanager: true
-    etcd: true
     configReloaders: true
     general: true
     k8s: true
@@ -282,15 +212,12 @@ defaultRules:
     kubeApiserverAvailability: true
     kubeApiserverSlos: true
     kubelet: true
-    kubeProxy: true
     kubePrometheusGeneral: true
     kubePrometheusNodeRecording: true
     kubernetesApps: true
     kubernetesResources: true
     kubernetesStorage: true
     kubernetesSystem: true
-    kubeSchedulerAlerting: true
-    kubeSchedulerRecording: true
     kubeStateMetrics: true
     network: true
     node: true
@@ -298,3 +225,8 @@ defaultRules:
     nodeExporterRecording: true
     prometheus: true
     prometheusOperator: true
+    # Desactivees : composants absents sur Minikube
+    etcd: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
