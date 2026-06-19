@@ -20,7 +20,11 @@
 # =============================================================================
 
 ---
-# Identifiants S3 utilises par SeaweedFS et par Loki pour s'y connecter.
+# Identifiants S3 utilises par Loki pour se connecter a SeaweedFS.
+# Les cles portent des noms de variables d'environnement valides
+# (majuscules, underscores) car Loki les injecte via envFrom : chaque cle
+# devient une variable d'environnement de meme nom. Un nom avec tiret
+# (access-key) serait un nom de variable invalide et donc ignore.
 # En production, ces valeurs seraient generees et stockees de facon securisee.
 apiVersion: v1
 kind: Secret
@@ -29,8 +33,8 @@ metadata:
   namespace: monitoring
 type: Opaque
 stringData:
-  access-key: "loki-access-key"
-  secret-key: "loki-secret-key-change-me"
+  S3_ACCESS_KEY: "loki-access-key"
+  S3_SECRET_KEY: "loki-secret-key-change-me"
 
 ---
 # Configuration S3 de SeaweedFS : definit l'identite et ses droits sur le
