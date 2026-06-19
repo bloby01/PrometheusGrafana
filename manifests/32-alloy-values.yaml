@@ -1,0 +1,138 @@
+# =============================================================================
+# Grafana Alloy — collecteur de logs des pods vers Loki
+# =============================================================================
+# Chart : grafana/alloy (version 1.7.x)
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm repo update
+#   helm install alloy grafana/alloy -n monitoring -f manifests/32-alloy-values.yaml
+#
+# Alloy est deploye en DaemonSet : un pod par noeud. Chaque pod lit les fichiers
+# de log des conteneurs presents sur SON noeud (sous /var/log/pods), les enrichit
+# de labels Kubernetes, puis les pousse vers la gateway Loki.
+#
+# Note pour le chapitre 5 (OpenTelemetry) : Alloy est en realite une distribution
+# du Collector OpenTelemetry. Ici on ne s'en sert que pour les logs ; son role
+# unifie (metriques, logs, traces) sera devoile plus tard.
+# =============================================================================
+
+controller:
+  # DaemonSet : indispensable pour la collecte de logs, afin qu'un agent tourne
+  # sur chaque noeud et lise les logs locaux de ce noeud.
+  type: daemonset
+
+alloy:
+  # Ressources volontairement modestes (formation).
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Montages necessaires pour lire les logs des conteneurs sur le noeud hote.
+  mounts:
+    # Monte /var/log de l'hote : Alloy y trouve les logs des pods.
+    varlog: true
+
+  # -------------------------------------------------------------------------
+  # Configuration Alloy (langage River). Definit le pipeline de collecte :
+  #   1. decouvrir les pods du cluster
+  #   2. les relabeliser (ajouter namespace, pod, container, app...)
+  #   3. lire leurs fichiers de log
+  #   4. traiter (extraire le niveau, etc.)
+  #   5. ecrire vers Loki
+  # -------------------------------------------------------------------------
+  configMap:
+    content: |-
+      // ---- Sortie : ou envoyer les logs -------------------------------------
+      // loki.write definit la destination : la gateway Loki, qui route vers le
+      // distributor. C'est le point d'entree d'ecriture de Loki.
+      loki.write "default" {
+        endpoint {
+          url = "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"
+        }
+      }
+
+      // ---- Decouverte : quels pods observer ---------------------------------
+      // discovery.kubernetes surveille l'etat du cluster et maintient a jour la
+      // liste des pods en cours d'execution.
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // ---- Relabeling : enrichir les cibles avec des labels Kubernetes ------
+      // Transforme les metadonnees Kubernetes en labels de log exploitables
+      // dans LogQL (namespace, pod, container, app, noeud).
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        // namespace
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        // nom du pod
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        // nom du conteneur
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        // label applicatif (app=frontend / api / worker pour la boutique)
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app"]
+          target_label  = "app"
+        }
+        // noeud hote
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          target_label  = "node_name"
+        }
+        // chemin du fichier de log a lire (requis par loki.source.kubernetes)
+        rule {
+          source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+          separator     = "/"
+          target_label  = "__path__"
+          replacement   = "/var/log/pods/*$1/*.log"
+        }
+      }
+
+      // ---- Lecture : recuperer le contenu des logs --------------------------
+      // loki.source.kubernetes lit les logs des conteneurs decouverts via
+      // l'API Kubernetes, sans dependre du format de fichier sur disque.
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.process.add_level.receiver]
+      }
+
+      // ---- Traitement : extraire le niveau de log ---------------------------
+      // loki.process applique des etapes de transformation. Ici, on detecte le
+      // niveau (info/warn/error) et on l'expose en label structure.
+      loki.process "add_level" {
+        forward_to = [loki.write.default.receiver]
+
+        // Tente d'extraire un champ "level" d'un log JSON (cas de la boutique,
+        // dont les logs sont structures en JSON).
+        stage.json {
+          expressions = {
+            level = "level",
+          }
+        }
+        // Promeut le niveau detecte en label.
+        stage.labels {
+          values = {
+            level = "",
+          }
+        }
+      }
+
+# RBAC : Alloy a besoin de lire les pods du cluster pour les decouvrir.
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
