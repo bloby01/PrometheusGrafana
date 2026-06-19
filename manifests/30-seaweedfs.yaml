@@ -181,6 +181,12 @@ spec:
 ---
 # Job d'initialisation : cree le bucket "loki" une fois SeaweedFS pret.
 # Le bucket doit exister avant que Loki tente d'y ecrire.
+#
+# Deux points appris a l'usage :
+#  - weed shell a besoin de l'adresse du FILER (-filer) en plus du master,
+#    sinon les commandes S3 (s3.bucket.*) bloquent en attendant de le decouvrir.
+#  - la commande est passee par stdin (echo | weed shell) ce qui force le shell
+#    a s'executer puis rendre la main, au lieu de rester en mode interactif.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -198,10 +204,12 @@ spec:
             - "sh"
             - "-c"
             - |
-              echo "Attente de la passerelle S3 SeaweedFS..."
-              until wget -q -O- http://seaweedfs.monitoring:8333/healthz; do
+              echo "Attente du filer SeaweedFS..."
+              until weed shell -master=seaweedfs.monitoring:9333 -filer=seaweedfs.monitoring:8888 <<< "fs.ls /" >/dev/null 2>&1; do
+                echo "  filer pas encore pret, nouvelle tentative dans 3s..."
                 sleep 3
               done
-              echo "SeaweedFS pret. Creation du bucket loki via weed shell."
-              echo "s3.bucket.create -name loki" | weed shell -master=seaweedfs.monitoring:9333
-              echo "Bucket loki cree (ou deja existant)."
+              echo "Filer pret. Creation du bucket loki."
+              echo "s3.bucket.create -name loki" | weed shell -master=seaweedfs.monitoring:9333 -filer=seaweedfs.monitoring:8888
+              echo "Verification :"
+              echo "s3.bucket.list" | weed shell -master=seaweedfs.monitoring:9333 -filer=seaweedfs.monitoring:8888
