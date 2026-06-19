@@ -1,0 +1,207 @@
+# =============================================================================
+# SeaweedFS — stockage objet S3-compatible pour Loki
+# =============================================================================
+# Loki en mode microservices exige un stockage objet PARTAGE entre ses
+# composants (distributor, ingester, querier...). On deploie ici SeaweedFS,
+# un stockage objet S3-compatible libre (licence Apache 2.0), activement
+# maintenu, qui joue le role de S3 a l'interieur du cluster.
+#
+# Pourquoi SeaweedFS et pas MinIO : depuis octobre 2025, MinIO a cesse de
+# publier sa version communautaire et son depot a ete archive en avril 2026.
+# SeaweedFS est un projet vivant (une release tous les quelques jours) qui se
+# positionne comme l'alternative S3 de reference pour l'auto-hebergement.
+#
+# IMPORTANT — limites en formation :
+# Ce SeaweedFS est volontairement minimal : UN seul pod, UN seul volume local.
+# Il n'est ni resilient ni redondant. En production, on utilise un stockage
+# objet dedie et redondant : AWS S3, un cluster SeaweedFS multi-noeuds, Ceph
+# via Rook, ou Garage. Du point de vue de Loki, peu importe le fournisseur
+# tant qu'il parle le protocole S3.
+# =============================================================================
+
+---
+# Identifiants S3 utilises par SeaweedFS et par Loki pour s'y connecter.
+# En production, ces valeurs seraient generees et stockees de facon securisee.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: seaweedfs-s3-credentials
+  namespace: monitoring
+type: Opaque
+stringData:
+  access-key: "loki-access-key"
+  secret-key: "loki-secret-key-change-me"
+
+---
+# Configuration S3 de SeaweedFS : definit l'identite et ses droits sur le
+# bucket. Montee en tant que fichier dans le conteneur.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seaweedfs-s3-config
+  namespace: monitoring
+data:
+  s3.json: |
+    {
+      "identities": [
+        {
+          "name": "loki",
+          "credentials": [
+            {
+              "accessKey": "loki-access-key",
+              "secretKey": "loki-secret-key-change-me"
+            }
+          ],
+          "actions": [
+            "Read",
+            "Write",
+            "List",
+            "Tagging",
+            "Admin"
+          ]
+        }
+      ]
+    }
+
+---
+# Volume de stockage des donnees, fourni par local-path (stockage local).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: seaweedfs-data
+  namespace: monitoring
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 8Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: monitoring
+  labels:
+    app: seaweedfs
+spec:
+  replicas: 1
+  # Recreate plutot que RollingUpdate : un seul volume RWO, on ne veut pas
+  # deux pods se disputant le meme disque pendant une mise a jour.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: seaweedfs
+  template:
+    metadata:
+      labels:
+        app: seaweedfs
+    spec:
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.31
+          args:
+            # Mode "server" tout-en-un : master + volume + filer + passerelle S3.
+            - "server"
+            - "-dir=/data"
+            - "-s3"
+            - "-s3.config=/etc/seaweedfs/s3.json"
+            - "-s3.port=8333"
+            - "-ip.bind=0.0.0.0"
+            - "-master.volumeSizeLimitMB=1024"
+          ports:
+            - name: s3
+              containerPort: 8333
+            - name: master
+              containerPort: 9333
+            - name: volume
+              containerPort: 8080
+            - name: filer
+              containerPort: 8888
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: s3-config
+              mountPath: /etc/seaweedfs
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8333
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8333
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: seaweedfs-data
+        - name: s3-config
+          configMap:
+            name: seaweedfs-s3-config
+
+---
+# Service exposant l'API S3 de SeaweedFS aux autres composants du cluster
+# (Loki s'y connectera via http://seaweedfs.monitoring:8333).
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  namespace: monitoring
+  labels:
+    app: seaweedfs
+spec:
+  selector:
+    app: seaweedfs
+  ports:
+    - name: s3
+      port: 8333
+      targetPort: s3
+    - name: master
+      port: 9333
+      targetPort: master
+    - name: filer
+      port: 8888
+      targetPort: filer
+
+---
+# Job d'initialisation : cree le bucket "loki" une fois SeaweedFS pret.
+# Le bucket doit exister avant que Loki tente d'y ecrire.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seaweedfs-create-bucket
+  namespace: monitoring
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-bucket
+          image: chrislusf/seaweedfs:4.31
+          command:
+            - "sh"
+            - "-c"
+            - |
+              echo "Attente de la passerelle S3 SeaweedFS..."
+              until wget -q -O- http://seaweedfs.monitoring:8333/healthz; do
+                sleep 3
+              done
+              echo "SeaweedFS pret. Creation du bucket loki via weed shell."
+              echo "s3.bucket.create -name loki" | weed shell -master=seaweedfs.monitoring:9333
+              echo "Bucket loki cree (ou deja existant)."
