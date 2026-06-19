@@ -153,8 +153,14 @@ minio:
 lokiCanary:
   enabled: true
 
-# Caches memcached : reduits a un exemplaire chacun.
+# Caches memcached : DESACTIVES.
+# Par defaut, le chart attribue a ces caches des tailles de PRODUCTION : le
+# chunks-cache reclame a lui seul pres de 10 Go de RAM, intenable en formation.
+# Ils accelerent les requetes mais ne sont pas necessaires au fonctionnement.
+# ATTENTION : il faut bien "enabled: false" et non juste reduire les replicas ;
+# sinon le StatefulSet du cache est cree et reste bloque en Pending.
+# En production, on les reactive avec des tailles dimensionnees a la charge.
 chunksCache:
-  replicas: 1
+  enabled: false
 resultsCache:
-  replicas: 1
+  enabled: false
