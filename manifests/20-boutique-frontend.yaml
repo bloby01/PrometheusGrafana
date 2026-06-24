@@ -20,12 +20,35 @@ spec:
         - name: frontend
           image: bloby01/boutique-frontend:v1
           imagePullPolicy: Always
+          # --- Chapitre Traces : instrumentation OpenTelemetry AUTOMATIQUE ---
+          # On surcharge la commande de lancement pour l'envelopper dans
+          # "opentelemetry-instrument", qui instrumente Flask et les appels HTTP
+          # sortants SANS modifier le code applicatif. Les traces produites sont
+          # envoyees a Alloy (recepteur OTLP), qui les transmet a Tempo.
+          command: ["opentelemetry-instrument", "python", "app.py"]
           ports:
             - name: metrics
               containerPort: 8081
           env:
             - name: API_URL
               value: "http://api:8082"
+            # Nom du service tel qu'il apparaitra dans les traces.
+            - name: OTEL_SERVICE_NAME
+              value: "frontend"
+            # Destination des traces : le recepteur OTLP gRPC d'Alloy.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://alloy.monitoring.svc.cluster.local:4317"
+            # Protocole d'export (gRPC, port 4317).
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            # On exporte les traces ; metriques et logs OTLP desactives ici
+            # (les metriques restent servies via /metrics, les logs via stdout).
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "none"
+            - name: OTEL_LOGS_EXPORTER
+              value: "none"
 ---
 apiVersion: v1
 kind: Service
