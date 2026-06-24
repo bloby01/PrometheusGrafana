@@ -30,8 +30,11 @@ spec:
             - "sh"
             - "-c"
             - |
-              echo "Attente du filer SeaweedFS..."
-              until echo "fs.ls /" | weed shell -master=seaweedfs.monitoring:9333 -filer=seaweedfs.monitoring:8888 >/dev/null 2>&1; do
+              echo "Attente du filer SeaweedFS (HTTP)..."
+              # On teste la disponibilite du filer par un appel HTTP simple, qui
+              # ne peut pas se suspendre — contrairement a "weed shell" via le
+              # service reseau, qui peut rester bloque sans rendre la main.
+              until wget -q -O- http://seaweedfs.monitoring:8888/ >/dev/null 2>&1; do
                 echo "  filer pas encore pret, nouvelle tentative dans 3s..."
                 sleep 3
               done
