@@ -1,18 +1,20 @@
 # =============================================================================
-# Grafana Alloy — collecteur de logs des pods vers Loki
+# Grafana Alloy — collecteur unifie : logs (vers Loki) et traces (vers Tempo)
 # =============================================================================
 # Chart : grafana/alloy (version 1.7.x)
 #   helm repo add grafana https://grafana.github.io/helm-charts
 #   helm repo update
-#   helm install alloy grafana/alloy -n monitoring -f manifests/32-alloy-values.yaml
+#   helm upgrade alloy grafana/alloy -n monitoring -f manifests/32-alloy-values.yaml
 #
-# Alloy est deploye en DaemonSet : un pod par noeud. Chaque pod lit les fichiers
-# de log des conteneurs presents sur SON noeud (sous /var/log/pods), les enrichit
-# de labels Kubernetes, puis les pousse vers la gateway Loki.
+# Alloy est deploye en DaemonSet : un pod par noeud.
+#   - Logs : chaque pod lit les logs des conteneurs de son noeud, les enrichit
+#     de labels Kubernetes, et les pousse vers la gateway Loki.
+#   - Traces : Alloy expose un recepteur OTLP (ports 4317/4318) ou la boutique
+#     instrumentee envoie ses traces, qu'Alloy transmet ensuite a Tempo.
 #
-# Note pour le chapitre 5 (OpenTelemetry) : Alloy est en realite une distribution
-# du Collector OpenTelemetry. Ici on ne s'en sert que pour les logs ; son role
-# unifie (metriques, logs, traces) sera devoile plus tard.
+# Note pour le chapitre 5 (OpenTelemetry) : qu'Alloy parle nativement l'OTLP et
+# enchaine recepteur -> exportateur n'est pas un hasard. Alloy est une
+# distribution du Collector OpenTelemetry. Ce sera devoile au chapitre suivant.
 # =============================================================================
 
 controller:
@@ -34,6 +36,18 @@ alloy:
   mounts:
     # Monte /var/log de l'hote : Alloy y trouve les logs des pods.
     varlog: true
+
+  # Ports OTLP exposes pour la reception des traces, ajoutes au Service Alloy
+  # afin que la boutique puisse joindre alloy.monitoring:4317 (gRPC) / :4318.
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
 
   # -------------------------------------------------------------------------
   # Configuration Alloy (langage River). Definit le pipeline de collecte :
@@ -126,6 +140,43 @@ alloy:
         stage.labels {
           values = {
             level = "",
+          }
+        }
+      }
+
+      // =======================================================================
+      // PIPELINE DES TRACES (chapitre 4)
+      // La boutique, instrumentee automatiquement avec OpenTelemetry, envoie ses
+      // traces a Alloy au format OTLP. Alloy les recoit puis les transmet a
+      // Tempo. C'est le meme principe que pour les logs : Alloy est le point de
+      // collecte unique, qui route chaque signal vers son backend.
+      // =======================================================================
+
+      // ---- Reception : ecouter les traces OTLP ------------------------------
+      // otelcol.receiver.otlp ouvre deux points d'entree : gRPC (port 4317) et
+      // HTTP (port 4318), les deux protocoles standard d'OpenTelemetry. Les
+      // traces recues sont transmises a l'exportateur ci-dessous.
+      otelcol.receiver.otlp "default" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+        output {
+          traces = [otelcol.exporter.otlp.tempo.input]
+        }
+      }
+
+      // ---- Export : pousser les traces vers Tempo ---------------------------
+      // otelcol.exporter.otlp envoie les traces a la passerelle de distribution
+      // de Tempo, sur son port OTLP gRPC (4317). tls.insecure car la liaison
+      // interne au cluster se fait en clair.
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "tempo-distributor.monitoring.svc.cluster.local:4317"
+          tls {
+            insecure = true
           }
         }
       }
