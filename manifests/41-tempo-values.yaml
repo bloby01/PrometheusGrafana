@@ -1,0 +1,165 @@
+# =============================================================================
+# Tempo — mode distribué (microservices), stockage objet SeaweedFS
+# =============================================================================
+# Chart : grafana-community/tempo-distributed
+# Depuis janvier 2026, le chart OSS est publie par la communaute Grafana :
+#   helm repo add grafana-community https://grafana-community.github.io/helm-charts
+#   helm repo update
+#   helm install tempo grafana-community/tempo-distributed \
+#     -n monitoring -f manifests/41-tempo-values.yaml
+#
+# Profil FORMATION / MINIKUBE :
+# Mode distribue (chaque fonction de Tempo dans son propre processus), comme en
+# production, mais replicas reduits a 1 pour tenir sur un noeud. Le stockage est
+# le SeaweedFS deja en place (manifests/30-seaweedfs.yaml), sur le bucket
+# "tempo" cree par manifests/40-tempo-bucket.yaml.
+#
+# Tempo recoit les traces au format OTLP. C'est Alloy qui les lui transmettra
+# (chapitre suivant) — exactement comme il transmet les logs a Loki.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# STOCKAGE DES TRACES — SeaweedFS via S3
+# -----------------------------------------------------------------------------
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: tempo
+      endpoint: seaweedfs.monitoring:8333
+      # Identifiants injectes depuis le Secret seaweedfs-s3-credentials
+      # (cf. global.extraEnvFrom plus bas) et resolus par expansion de variables.
+      access_key: "${S3_ACCESS_KEY}"
+      secret_key: "${S3_SECRET_KEY}"
+      # OBLIGATOIRE pour un S3-compatible auto-heberge : adressage par chemin.
+      forcepathstyle: true
+      # Connexion en HTTP (pas de TLS sur SeaweedFS interne).
+      insecure: true
+
+# Injecte les identifiants S3 du Secret comme variables d'environnement, et
+# active l'expansion ${VAR} dans la configuration de Tempo.
+global:
+  extraEnvFrom:
+    - secretRef:
+        name: seaweedfs-s3-credentials
+
+tempo:
+  # Active l'expansion des variables d'environnement dans la config.
+  configEnv:
+    - name: S3_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: seaweedfs-s3-credentials
+          key: S3_ACCESS_KEY
+    - name: S3_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: seaweedfs-s3-credentials
+          key: S3_SECRET_KEY
+
+# -----------------------------------------------------------------------------
+# PROTOCOLES D'INGESTION
+# Desactives par defaut : on active OTLP (gRPC et HTTP), le protocole par lequel
+# Alloy enverra les traces. Les autres (Jaeger, Zipkin) restent desactives.
+# -----------------------------------------------------------------------------
+traces:
+  otlp:
+    grpc:
+      enabled: true
+    http:
+      enabled: true
+  zipkin:
+    enabled: false
+  jaeger:
+    thriftHttp:
+      enabled: false
+
+# -----------------------------------------------------------------------------
+# COMPOSANTS DU MODE DISTRIBUE
+# Replicas a 1 (formation mononoeud). En production : 3+ par composant.
+# distributor, ingester, querier, query-frontend et compactor sont toujours
+# installes ; on fixe simplement leur nombre de replicas et leurs ressources.
+# -----------------------------------------------------------------------------
+distributor:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+ingester:
+  replicas: 1
+  # Pas de replication sur un seul exemplaire (mononoeud).
+  config:
+    replication_factor: 1
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: local-path
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+querier:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+queryFrontend:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+compactor:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Caches memcached : DESACTIVES (comme pour Loki, leurs tailles par defaut sont
+# calibrees pour la production et trop lourdes pour une maquette).
+memcached:
+  enabled: false
+
+# MinIO integre au chart : DESACTIVE. On utilise notre SeaweedFS deploye
+# separement (manifests/30-seaweedfs.yaml).
+minio:
+  enabled: false
+
+# Generateur de metriques : laisse desactive pour ce premier deploiement
+# (il produit des metriques derivees des traces, sujet avance).
+metricsGenerator:
+  enabled: false
+
+# La passerelle expose une adresse unique pour l'ingestion et la requete.
+# En ClusterIP : acces par port-forward (pas de LoadBalancer sur Minikube).
+gateway:
+  enabled: true
+  service:
+    type: ClusterIP
+
+# Retention des traces : 72h, suffisant pour une formation.
+compactorConfig:
+  compaction:
+    block_retention: 72h
