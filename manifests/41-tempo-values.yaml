@@ -27,35 +27,16 @@ storage:
     s3:
       bucket: tempo
       endpoint: seaweedfs.monitoring:8333
-      # Identifiants injectes depuis le Secret seaweedfs-s3-credentials
-      # (cf. global.extraEnvFrom plus bas) et resolus par expansion de variables.
+      # Identifiants resolus a l'execution depuis le Secret
+      # seaweedfs-s3-credentials, injecte en variables d'environnement sur chaque
+      # composant (voir extraEnv/extraArgs plus bas). Aucun secret en clair dans
+      # ce fichier : c'est la pratique de production.
       access_key: "${S3_ACCESS_KEY}"
       secret_key: "${S3_SECRET_KEY}"
       # OBLIGATOIRE pour un S3-compatible auto-heberge : adressage par chemin.
       forcepathstyle: true
       # Connexion en HTTP (pas de TLS sur SeaweedFS interne).
       insecure: true
-
-# Injecte les identifiants S3 du Secret comme variables d'environnement, et
-# active l'expansion ${VAR} dans la configuration de Tempo.
-global:
-  extraEnvFrom:
-    - secretRef:
-        name: seaweedfs-s3-credentials
-
-tempo:
-  # Active l'expansion des variables d'environnement dans la config.
-  configEnv:
-    - name: S3_ACCESS_KEY
-      valueFrom:
-        secretKeyRef:
-          name: seaweedfs-s3-credentials
-          key: S3_ACCESS_KEY
-    - name: S3_SECRET_KEY
-      valueFrom:
-        secretKeyRef:
-          name: seaweedfs-s3-credentials
-          key: S3_SECRET_KEY
 
 # -----------------------------------------------------------------------------
 # PROTOCOLES D'INGESTION
@@ -76,12 +57,41 @@ traces:
 
 # -----------------------------------------------------------------------------
 # COMPOSANTS DU MODE DISTRIBUE
+# -----------------------------------------------------------------------------
+# INJECTION DES IDENTIFIANTS S3 (pratique de production)
+# Les identifiants ne sont jamais en clair : ils viennent du Secret
+# seaweedfs-s3-credentials, injectes en variables d'environnement sur chaque
+# composant qui accede au stockage, et l'expansion ${VAR} dans la config est
+# activee par le flag -config.expand-env=true.
+# On definit ces deux reglages une seule fois via des ancres YAML (&), puis on
+# les reutilise sur chaque composant (*) pour eviter la repetition.
+# -----------------------------------------------------------------------------
+_s3_env: &s3Env
+  - name: S3_ACCESS_KEY
+    valueFrom:
+      secretKeyRef:
+        name: seaweedfs-s3-credentials
+        key: S3_ACCESS_KEY
+  - name: S3_SECRET_KEY
+    valueFrom:
+      secretKeyRef:
+        name: seaweedfs-s3-credentials
+        key: S3_SECRET_KEY
+
+_s3_args: &s3Args
+  - "-config.expand-env=true"
+
+# -----------------------------------------------------------------------------
+# COMPOSANTS DU MODE DISTRIBUE
 # Replicas a 1 (formation mononoeud). En production : 3+ par composant.
 # distributor, ingester, querier, query-frontend et compactor sont toujours
 # installes ; on fixe simplement leur nombre de replicas et leurs ressources.
+# Chaque composant recoit l'injection du Secret S3 et le flag d'expansion.
 # -----------------------------------------------------------------------------
 distributor:
   replicas: 1
+  extraArgs: *s3Args
+  extraEnv: *s3Env
   resources:
     requests:
       cpu: 50m
@@ -92,6 +102,8 @@ distributor:
 
 ingester:
   replicas: 1
+  extraArgs: *s3Args
+  extraEnv: *s3Env
   # Pas de replication sur un seul exemplaire (mononoeud).
   config:
     replication_factor: 1
@@ -109,6 +121,8 @@ ingester:
 
 querier:
   replicas: 1
+  extraArgs: *s3Args
+  extraEnv: *s3Env
   resources:
     requests:
       cpu: 50m
@@ -119,6 +133,8 @@ querier:
 
 queryFrontend:
   replicas: 1
+  extraArgs: *s3Args
+  extraEnv: *s3Env
   resources:
     requests:
       cpu: 50m
@@ -129,6 +145,8 @@ queryFrontend:
 
 compactor:
   replicas: 1
+  extraArgs: *s3Args
+  extraEnv: *s3Env
   resources:
     requests:
       cpu: 50m
@@ -137,8 +155,14 @@ compactor:
       cpu: 500m
       memory: 256Mi
 
-# Caches memcached : DESACTIVES (comme pour Loki, leurs tailles par defaut sont
-# calibrees pour la production et trop lourdes pour une maquette).
+# Cache : DESACTIVE proprement.
+# Mettre seulement "memcached.enabled: false" retire le pod memcached mais
+# laisse la config cliente du cache pointer vers un hote inexistant
+# (erreur "tempo-memcached ... no such host"). Pour couper le cache, il faut
+# vider la liste des caches. En production, on reactive un memcached dimensionne.
+cache:
+  caches: []
+
 memcached:
   enabled: false
 
