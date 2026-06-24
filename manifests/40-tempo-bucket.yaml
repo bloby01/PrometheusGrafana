@@ -1,0 +1,41 @@
+# =============================================================================
+# Bucket "tempo" dans SeaweedFS — pour le stockage des traces
+# =============================================================================
+# Tempo, comme Loki, range ses donnees dans un stockage objet S3. On reutilise
+# le SeaweedFS deja deploye (manifests/30-seaweedfs.yaml) en y ajoutant un
+# second bucket dedie aux traces, distinct du bucket "loki" des logs.
+#
+# Ce Job reprend exactement la methode validee pour le bucket loki :
+#   - weed shell avec l'adresse du FILER explicite (sinon la commande bloque) ;
+#   - commande passee par "echo | weed shell" (compatible sh/BusyBox).
+#
+#   kubectl apply -f manifests/40-tempo-bucket.yaml
+# =============================================================================
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seaweedfs-create-bucket-tempo
+  namespace: monitoring
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-bucket
+          image: chrislusf/seaweedfs:4.31
+          command:
+            - "sh"
+            - "-c"
+            - |
+              echo "Attente du filer SeaweedFS..."
+              until echo "fs.ls /" | weed shell -master=seaweedfs.monitoring:9333 -filer=seaweedfs.monitoring:8888 >/dev/null 2>&1; do
+                echo "  filer pas encore pret, nouvelle tentative dans 3s..."
+                sleep 3
+              done
+              echo "Filer pret. Creation du bucket tempo."
+              echo "s3.bucket.create -name tempo" | weed shell -master=seaweedfs.monitoring:9333 -filer=seaweedfs.monitoring:8888
+              echo "Verification :"
+              echo "s3.bucket.list" | weed shell -master=seaweedfs.monitoring:9333 -filer=seaweedfs.monitoring:8888
