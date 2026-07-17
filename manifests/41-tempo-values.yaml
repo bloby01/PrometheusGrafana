@@ -1,25 +1,35 @@
 # =============================================================================
-# Tempo — mode distribué (microservices), stockage objet SeaweedFS
+# Tempo 3.0 — mode microservices avec write path Kafka, stockage SeaweedFS
 # =============================================================================
 # Chart : grafana-community/tempo-distributed
-# Depuis janvier 2026, le chart OSS est publie par la communaute Grafana :
-#   helm repo add grafana-community https://grafana-community.github.io/helm-charts
-#   helm repo update
-#   helm install tempo grafana-community/tempo-distributed \
+#   helm upgrade --install tempo grafana-community/tempo-distributed \
 #     -n monitoring -f manifests/41-tempo-values.yaml
 #
-# Profil FORMATION / MINIKUBE :
-# Mode distribue (chaque fonction de Tempo dans son propre processus), comme en
-# production, mais replicas reduits a 1 pour tenir sur un noeud. Le stockage est
-# le SeaweedFS deja en place (manifests/30-seaweedfs.yaml), sur le bucket
-# "tempo" cree par manifests/40-tempo-bucket.yaml.
+# ARCHITECTURE TEMPO 3.0 (nouveaute majeure) :
+# Depuis la 3.0, le mode microservices repose sur Kafka comme file d'attente
+# durable. Le chemin d'ecriture a ete refondu :
+#   - le distributor ecrit les spans dans Kafka (au lieu de les pousser aux
+#     ingesters) ;
+#   - le block-builder consomme Kafka et ecrit les blocs dans le stockage objet ;
+#   - le live-store consomme Kafka et sert les requetes sur les traces recentes ;
+#   - un backend-scheduler et un backend-worker remplacent le compactor.
+# Les ingesters et le compactor de la 2.x n'existent PLUS. Comme Kafka assure la
+# durabilite, Tempo fonctionne en replication 1.
 #
-# Tempo recoit les traces au format OTLP. C'est Alloy qui les lui transmettra
-# (chapitre suivant) — exactement comme il transmet les logs a Loki.
+# PREREQUIS : un cluster Kafka doit exister (manifests/60-kafka.yaml, via
+# l'operateur Strimzi). Bootstrap : tempo-kafka-kafka-bootstrap.monitoring:9092.
+#
+# PROFIL FORMATION / MINIKUBE : tout au minimum.
+#  - 1 seule partition Kafka -> 1 block-builder et 1 live-store (la regle du
+#    chart impose : replicas = nombre de partitions) ;
+#  - ressources bridees ; caches et minio desactives ; SeaweedFS pour le S3.
+#
+# EN PRODUCTION (voir encart du cours) : plusieurs partitions Kafka, autant de
+# block-builders et live-stores, composants dimensionnes, stockage objet dedie.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# STOCKAGE DES TRACES — SeaweedFS via S3
+# STOCKAGE DES TRACES — SeaweedFS via S3 (inchange par rapport a la 2.x)
 # -----------------------------------------------------------------------------
 storage:
   trace:
@@ -27,44 +37,31 @@ storage:
     s3:
       bucket: tempo
       endpoint: seaweedfs.monitoring:8333
-      # Identifiants resolus a l'execution depuis le Secret
-      # seaweedfs-s3-credentials, injecte en variables d'environnement sur chaque
-      # composant (voir extraEnv/extraArgs plus bas). Aucun secret en clair dans
-      # ce fichier : c'est la pratique de production.
       access_key: "${S3_ACCESS_KEY}"
       secret_key: "${S3_SECRET_KEY}"
-      # OBLIGATOIRE pour un S3-compatible auto-heberge : adressage par chemin.
       forcepathstyle: true
-      # Connexion en HTTP (pas de TLS sur SeaweedFS interne).
       insecure: true
 
 # -----------------------------------------------------------------------------
-# PROTOCOLES D'INGESTION
-# Desactives par defaut : on active OTLP (gRPC et HTTP), le protocole par lequel
-# Alloy enverra les traces. Les autres (Jaeger, Zipkin) restent desactives.
+# WRITE PATH KAFKA (nouveaute 3.0)
+# Le distributor ecrit dans ce Kafka ; block-builder et live-store y consomment.
 # -----------------------------------------------------------------------------
-traces:
-  otlp:
-    grpc:
-      enabled: true
-    http:
-      enabled: true
-  zipkin:
-    enabled: false
-  jaeger:
-    thriftHttp:
-      enabled: false
+ingest:
+  kafka:
+    # Service bootstrap cree par Strimzi pour le cluster "tempo-kafka".
+    address: "tempo-kafka-kafka-bootstrap.monitoring:9092"
+    topic: tempo-traces
+    auto_create_topic_enabled: true
+    # UNE seule partition (maquette). block-builder et live-store devront avoir
+    # exactement ce meme nombre de replicas.
+    auto_create_topic_default_partitions: 1
 
 # -----------------------------------------------------------------------------
-# COMPOSANTS DU MODE DISTRIBUE
-# -----------------------------------------------------------------------------
-# INJECTION DES IDENTIFIANTS S3 (pratique de production)
-# Les identifiants ne sont jamais en clair : ils viennent du Secret
-# seaweedfs-s3-credentials, injectes en variables d'environnement sur chaque
-# composant qui accede au stockage, et l'expansion ${VAR} dans la config est
-# activee par le flag -config.expand-env=true.
-# On definit ces deux reglages une seule fois via des ancres YAML (&), puis on
-# les reutilise sur chaque composant (*) pour eviter la repetition.
+# INJECTION DES IDENTIFIANTS S3 (pratique de production, comme en 2.x)
+# Chaque composant qui accede au stockage recoit le Secret + le flag d'expansion.
+# En 3.0, les composants "stockage" sont : distributor (non, il ecrit Kafka),
+# block-builder, live-store, backend-scheduler, backend-worker, querier,
+# query-frontend. On applique l'injection largement via les ancres.
 # -----------------------------------------------------------------------------
 _s3_env: &s3Env
   - name: S3_ACCESS_KEY
@@ -82,12 +79,25 @@ _s3_args: &s3Args
   - "-config.expand-env=true"
 
 # -----------------------------------------------------------------------------
-# COMPOSANTS DU MODE DISTRIBUE
-# Replicas a 1 (formation mononoeud). En production : 3+ par composant.
-# distributor, ingester, querier, query-frontend et compactor sont toujours
-# installes ; on fixe simplement leur nombre de replicas et leurs ressources.
-# Chaque composant recoit l'injection du Secret S3 et le flag d'expansion.
+# PROTOCOLES D'INGESTION — OTLP active (Alloy envoie les traces en OTLP)
 # -----------------------------------------------------------------------------
+traces:
+  otlp:
+    grpc:
+      enabled: true
+    http:
+      enabled: true
+  zipkin:
+    enabled: false
+  jaeger:
+    thriftHttp:
+      enabled: false
+
+# -----------------------------------------------------------------------------
+# COMPOSANTS
+# -----------------------------------------------------------------------------
+
+# Distributor : recoit les traces (OTLP) et les ecrit dans Kafka.
 distributor:
   replicas: 1
   extraArgs: *s3Args
@@ -100,13 +110,28 @@ distributor:
       cpu: 500m
       memory: 256Mi
 
-ingester:
+# Block-builder : consomme Kafka, ecrit les blocs dans SeaweedFS.
+# replicas = nombre de partitions Kafka (ici 1).
+blockBuilder:
+  enabled: true
   replicas: 1
   extraArgs: *s3Args
   extraEnv: *s3Env
-  # Pas de replication sur un seul exemplaire (mononoeud).
-  config:
-    replication_factor: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Live-store : consomme Kafka, sert les traces recentes.
+# replicas = nombre de partitions Kafka (ici 1).
+liveStore:
+  enabled: true
+  replicas: 1
+  extraArgs: *s3Args
+  extraEnv: *s3Env
   persistence:
     enabled: true
     size: 2Gi
@@ -119,6 +144,33 @@ ingester:
       cpu: 500m
       memory: 512Mi
 
+# Backend-scheduler : planifie la maintenance des blocs (remplace le compactor).
+backendScheduler:
+  enabled: true
+  extraArgs: *s3Args
+  extraEnv: *s3Env
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+# Backend-worker : execute la maintenance planifiee.
+backendWorker:
+  replicas: 1
+  extraArgs: *s3Args
+  extraEnv: *s3Env
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+# Querier : lit les traces (depuis le stockage et les live-stores).
 querier:
   replicas: 1
   extraArgs: *s3Args
@@ -131,6 +183,7 @@ querier:
       cpu: 500m
       memory: 256Mi
 
+# Query-frontend : ordonnance les requetes.
 queryFrontend:
   replicas: 1
   extraArgs: *s3Args
@@ -143,47 +196,23 @@ queryFrontend:
       cpu: 300m
       memory: 256Mi
 
-compactor:
-  replicas: 1
-  extraArgs: *s3Args
-  extraEnv: *s3Env
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
-
-# Cache : DESACTIVE proprement.
-# Mettre seulement "memcached.enabled: false" retire le pod memcached mais
-# laisse la config cliente du cache pointer vers un hote inexistant
-# (erreur "tempo-memcached ... no such host"). Pour couper le cache, il faut
-# vider la liste des caches. En production, on reactive un memcached dimensionne.
+# Cache desactive proprement (comme en 2.x).
 cache:
   caches: []
 
 memcached:
   enabled: false
 
-# MinIO integre au chart : DESACTIVE. On utilise notre SeaweedFS deploye
-# separement (manifests/30-seaweedfs.yaml).
+# MinIO integre desactive : on utilise SeaweedFS.
 minio:
   enabled: false
 
-# Generateur de metriques : laisse desactive pour ce premier deploiement
-# (il produit des metriques derivees des traces, sujet avance).
+# Generateur de metriques : laisse desactive pour ce premier deploiement.
 metricsGenerator:
   enabled: false
 
-# La passerelle expose une adresse unique pour l'ingestion et la requete.
-# En ClusterIP : acces par port-forward (pas de LoadBalancer sur Minikube).
+# Passerelle : point d'entree unique, en ClusterIP (acces par port-forward).
 gateway:
   enabled: true
   service:
     type: ClusterIP
-
-# Retention des traces : 72h, suffisant pour une formation.
-compactorConfig:
-  compaction:
-    block_retention: 72h
