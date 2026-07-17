@@ -3,8 +3,9 @@
 # base.sh — reconstruction complete de la maquette d'observabilite
 # =============================================================================
 # Cree un cluster Minikube 3 noeuds, deploie la boutique, la stack de metriques
-# (Prometheus/Grafana), le stockage objet (SeaweedFS), les logs (Loki), les
-# traces (Tempo) et le collecteur unifie (Alloy), puis genere du trafic.
+# (Prometheus/Grafana), le stockage objet (SeaweedFS), les logs (Loki), le
+# broker Kafka (write path de Tempo 3.0), les traces (Tempo) et le collecteur
+# unifie (Alloy), puis genere du trafic.
 #
 # Usage : sh base.sh
 # =============================================================================
@@ -98,7 +99,26 @@ echo "--- Pods Loki ---"
 minikube kubectl -- get pods -n monitoring -l app.kubernetes.io/name=loki
 
 echo "============================================================"
-echo " 10. Traces — bucket tempo + Tempo (mode distribue)"
+echo " 10. Kafka (write path de Tempo 3.0) via l'operateur Strimzi"
+echo "============================================================"
+# Tempo 3.0 en mode microservices ecrit les traces dans Kafka. On deploie
+# d'abord l'operateur Strimzi (CNCF), puis un cluster Kafka minimal.
+helm repo add strimzi https://strimzi.io/charts/
+helm repo update
+helm install strimzi-kafka-operator strimzi/strimzi-kafka-operator --namespace monitoring
+echo "--- Attente de l'operateur Strimzi ---"
+minikube kubectl -- wait --for=condition=ready pod \
+  -l name=strimzi-cluster-operator -n monitoring --timeout=180s || true
+# L'operateur doit avoir installe les CRD avant qu'on applique le cluster Kafka.
+minikube kubectl -- apply -f manifests/60-kafka.yaml
+echo "--- Attente du cluster Kafka (peut prendre 1 a 2 minutes) ---"
+minikube kubectl -- wait --for=condition=ready pod \
+  -l strimzi.io/cluster=tempo-kafka -n monitoring --timeout=300s || true
+echo "--- Pods Kafka ---"
+minikube kubectl -- get pods -n monitoring -l strimzi.io/cluster=tempo-kafka
+
+echo "============================================================"
+echo " 11. Traces — bucket tempo + Tempo 3.0 (mode microservices, Kafka)"
 echo "============================================================"
 minikube kubectl -- apply -f manifests/40-tempo-bucket.yaml
 sleep 5
@@ -110,7 +130,7 @@ echo "--- Pods Tempo ---"
 minikube kubectl -- get pods -n monitoring -l app.kubernetes.io/name=tempo
 
 echo "============================================================"
-echo " 11. Collecteur unifie (Alloy : logs + traces)"
+echo " 12. Collecteur unifie (Alloy : logs + traces)"
 echo "============================================================"
 helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
@@ -120,7 +140,7 @@ echo "--- Pods Alloy (un par noeud) ---"
 minikube kubectl -- get pods -n monitoring -l app.kubernetes.io/name=alloy
 
 echo "============================================================"
-echo " 12. Generation de trafic sur la boutique"
+echo " 13. Generation de trafic sur la boutique"
 echo "============================================================"
 # L'etat des pods a pu changer depuis l'etape 5 (redeploiements, charge sur le
 # multinoeuds). On reattend donc explicitement que le frontend soit pret juste
@@ -143,12 +163,30 @@ echo "--- Trafic envoye ---"
 kill $PF_PID 2>/dev/null || true
 
 echo "============================================================"
+echo " 14. Data sources Loki + Tempo dans Grafana (maquette cle en main)"
+echo "============================================================"
+# Fichier separe : n'interfere pas avec le deroule manuel du cours.
+minikube kubectl -- apply -f manifests/50-grafana-datasources-loki-tempo.yaml
+# Grafana relit ses data sources au demarrage : on le redemarre.
+minikube kubectl -- rollout restart deployment kube-prometheus-stack-grafana -n monitoring
+minikube kubectl -- rollout status deployment kube-prometheus-stack-grafana -n monitoring --timeout=120s || true
+
+echo "============================================================"
 echo " Maquette prete. Vue d'ensemble :"
 echo "============================================================"
 minikube kubectl -- get pods -n monitoring
 echo ""
 minikube kubectl -- get pods -n production
+
+echo "============================================================"
+echo " 15. Ouverture de Grafana dans le navigateur"
+echo "============================================================"
+# Port-forward Grafana en tache de fond (laisse tourner apres le script).
+minikube kubectl -- port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80 &
+sleep 4
+echo "Grafana : http://localhost:3000  (admin / admin)"
+# Ouverture du navigateur par defaut du systeme (Linux).
+xdg-open http://localhost:3000 >/dev/null 2>&1 &
 echo ""
-echo "Acces Grafana :"
-echo "  minikube kubectl -- port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
-echo "  puis http://localhost:3000  (admin / admin)"
+echo "Le port-forward Grafana tourne en arriere-plan (PID \$!)."
+echo "Pour l'arreter : kill %1  (ou fermer ce terminal)."
