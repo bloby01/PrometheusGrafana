@@ -31,7 +31,7 @@
 # Node pool : un groupe de noeuds Kafka. Ici un seul noeud qui cumule les deux
 # roles KRaft (controller = metadonnees du cluster, broker = stockage des
 # messages). En production, on cree deux node pools separes.
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
   name: combined
@@ -64,7 +64,7 @@ spec:
 ---
 # Cluster Kafka : reference le node pool ci-dessus (via l'annotation KRaft) et
 # definit la configuration Kafka commune (listeners, facteurs de replication).
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: Kafka
 metadata:
   name: tempo-kafka
