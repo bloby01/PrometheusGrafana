@@ -1,0 +1,89 @@
+# =============================================================================
+# Data sources Grafana : Loki et Tempo (provisionnement automatique)
+# =============================================================================
+# Fichier SEPARE, a appliquer UNIQUEMENT pour une maquette "cle en main"
+# (script de reconstruction). En cours, on ajoute Loki et Tempo a la main dans
+# Grafana — c'est un temps pedagogique des chapitres Logs et Traces. Ne pas
+# appliquer ce fichier si l'on suit le deroule manuel du cours.
+#
+#   kubectl apply -f manifests/50-grafana-datasources-loki-tempo.yaml
+#   # puis redemarrer Grafana pour qu'il relise les data sources :
+#   kubectl rollout restart deployment kube-prometheus-stack-grafana -n monitoring
+#
+# Mecanisme : la ConfigMap porte le label grafana_datasource: "1". Le sidecar
+# de Grafana (deja actif via kube-prometheus-stack) detecte ce label et injecte
+# les data sources declarees, sans toucher au fichier 06-helm-values.yaml.
+#
+# Corrélation configuree dans les deux sens :
+#   - Loki -> Tempo (derivedFields) : depuis un log contenant un trace_id, un
+#     lien mene a la trace correspondante. NOTE : les logs de la boutique ne
+#     contiennent un trace_id qu'a partir du chapitre OpenTelemetry ; avant, le
+#     lien reste inactif faute de trace_id dans les lignes.
+#   - Tempo -> Loki (tracesToLogsV2) : depuis un span, un lien mene aux logs du
+#     meme service sur la fenetre de temps de la trace.
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources-loki-tempo
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  loki-tempo-datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      # ---------------------------------------------------------------------
+      # LOKI — logs
+      # ---------------------------------------------------------------------
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki-gateway.monitoring.svc.cluster.local
+        uid: loki
+        isDefault: false
+        editable: true
+        jsonData:
+          maxLines: 1000
+          # Corrélation Loki -> Tempo : detecte un trace_id dans les lignes de
+          # log et cree un lien vers la trace Tempo correspondante.
+          derivedFields:
+            - name: TraceID
+              # Reconnait trace_id="..." (logs JSON) ou trace_id=... (texte).
+              matcherRegex: '"?trace_id"?[:=]\s*"?([a-f0-9]+)"?'
+              url: '$${__value.raw}'
+              datasourceUid: tempo
+              urlDisplayLabel: "Voir la trace"
+
+      # ---------------------------------------------------------------------
+      # TEMPO — traces
+      # ---------------------------------------------------------------------
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo-query-frontend.monitoring.svc.cluster.local:3200
+        uid: tempo
+        isDefault: false
+        editable: true
+        jsonData:
+          httpMethod: GET
+          # Corrélation Tempo -> Loki : depuis un span, lien vers les logs du
+          # meme service, filtres sur la fenetre de temps de la trace.
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: '-1m'
+            spanEndTimeShift: '1m'
+            filterByTraceID: false
+            filterBySpanID: false
+            tags:
+              - key: 'service.name'
+                value: 'app'
+          # Graphe de services (necessite le metrics-generator de Tempo pour
+          # etre alimente ; sinon la vue reste vide, sans erreur bloquante).
+          serviceMap:
+            datasourceUid: prometheus
+          nodeGraph:
+            enabled: true
+          search:
+            hide: false
