@@ -9,7 +9,9 @@
 # Usage : sh base.sh
 # =============================================================================
 
-set -e
+# Note : on n'active PAS "set -e". Certaines commandes (wait qui expire, logs sur
+# un job pas encore termine) peuvent renvoyer un code non nul sans que ce soit
+# bloquant ; on veut que le script poursuive et affiche l'etat final.
 
 echo "============================================================"
 echo " 1. Creation du cluster Minikube (3 noeuds, CNI flannel)"
@@ -120,6 +122,12 @@ minikube kubectl -- get pods -n monitoring -l app.kubernetes.io/name=alloy
 echo "============================================================"
 echo " 12. Generation de trafic sur la boutique"
 echo "============================================================"
+# L'etat des pods a pu changer depuis l'etape 5 (redeploiements, charge sur le
+# multinoeuds). On reattend donc explicitement que le frontend soit pret juste
+# avant d'ouvrir le port-forward, sinon celui-ci echoue ("pod is not running").
+minikube kubectl -- wait --for=condition=ready pod \
+  -l app=frontend -n production --timeout=120s || true
+
 # Port-forward temporaire vers le frontend, en tache de fond.
 minikube kubectl -- port-forward -n production svc/frontend 8081:8081 &
 PF_PID=$!
@@ -128,7 +136,7 @@ echo "--- Envoi de 50 commandes ---"
 for i in $(seq 1 50); do
   curl -s -X POST http://localhost:8081/checkout \
     -H "Content-Type: application/json" \
-    -d "{\"order_id\":\"cmd-$i\",\"cart\":[\"clavier\"]}" > /dev/null
+    -d "{\"order_id\":\"cmd-$i\",\"cart\":[\"clavier\"]}" > /dev/null 2>&1 || true
 done
 echo "--- Trafic envoye ---"
 # On arrete le port-forward temporaire.
