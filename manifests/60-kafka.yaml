@@ -1,0 +1,97 @@
+# =============================================================================
+# Cluster Kafka minimal (Strimzi, mode KRaft) — file d'attente pour Tempo 3.0
+# =============================================================================
+# Depuis la version 3.0, Tempo en mode microservices ecrit les spans dans Kafka :
+# le distributor y depose les traces, les composants en aval (block-builder,
+# live-store) les consomment. Kafka sert de file d'attente durable entre eux.
+#
+# Prerequis : l'operateur Strimzi doit etre installe AVANT ce fichier :
+#   helm repo add strimzi https://strimzi.io/charts/
+#   helm repo update
+#   helm install strimzi-kafka-operator strimzi/strimzi-kafka-operator \
+#     --namespace monitoring
+#   # puis :
+#   kubectl apply -f manifests/60-kafka.yaml
+#
+# L'operateur Strimzi (projet CNCF) fonctionne par CRD : on DECRIT le cluster
+# souhaite (ressources Kafka + KafkaNodePool), et l'operateur cree et maintient
+# les pods correspondants. C'est le meme motif que l'operateur Prometheus.
+#
+# PROFIL FORMATION / MINIKUBE : configuration minimale absolue.
+#  - UN seul noeud Kafka, combinant les roles controller ET broker ;
+#  - replication 1 (aucune redondance) ;
+#  - ressources bridees (512 Mi -> 1 Gi), pour tenir sur une petite maquette.
+#
+# EN PRODUCTION (voir encart du cours) : on separe les roles en deux node pools
+# distincts — au moins 3 controllers et 3 brokers — chacun avec 1 a 2 Go de RAM
+# et un stockage dedie, pour la haute disponibilite et la durabilite reelle.
+# =============================================================================
+
+---
+# Node pool : un groupe de noeuds Kafka. Ici un seul noeud qui cumule les deux
+# roles KRaft (controller = metadonnees du cluster, broker = stockage des
+# messages). En production, on cree deux node pools separes.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: combined
+  namespace: monitoring
+  labels:
+    # Rattache ce node pool au cluster Kafka "tempo-kafka" defini plus bas.
+    strimzi.io/cluster: tempo-kafka
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 5Gi
+        class: local-path
+        kraftMetadata: shared
+        deleteClaim: true
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+---
+# Cluster Kafka : reference le node pool ci-dessus (via l'annotation KRaft) et
+# definit la configuration Kafka commune (listeners, facteurs de replication).
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: tempo-kafka
+  namespace: monitoring
+  annotations:
+    # Active le mode KRaft (sans ZooKeeper) et l'usage des node pools.
+    strimzi.io/kraft: enabled
+    strimzi.io/node-pools: enabled
+spec:
+  kafka:
+    # Point d'entree pour les clients (Tempo) : listener interne en clair,
+    # joignable a tempo-kafka-kafka-bootstrap.monitoring:9092.
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      # Tous les facteurs de replication a 1 : un seul noeud, aucune redondance.
+      # En production, ces valeurs sont a 3 (avec min.insync.replicas a 2).
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+  # La section entityOperator gere les CRD KafkaTopic / KafkaUser. Tempo cree
+  # ses propres topics au demarrage, mais on garde l'operateur de topics actif.
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
