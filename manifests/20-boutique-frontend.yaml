@@ -23,8 +23,7 @@ spec:
           # --- Chapitre Traces : instrumentation OpenTelemetry AUTOMATIQUE ---
           # On surcharge la commande de lancement pour l'envelopper dans
           # "opentelemetry-instrument", qui instrumente Flask et les appels HTTP
-          # sortants SANS modifier le code applicatif. Les traces produites sont
-          # envoyees a Alloy (recepteur OTLP), qui les transmet a Tempo.
+          # sortants SANS modifier le code applicatif.
           command: ["opentelemetry-instrument", "python", "app.py"]
           ports:
             - name: metrics
