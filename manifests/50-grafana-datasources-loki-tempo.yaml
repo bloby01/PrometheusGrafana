@@ -79,6 +79,22 @@ data:
             tags:
               - key: 'service.name'
                 value: 'app'
+          # Corrélation Tempo -> Prometheus : depuis un span, lien vers des
+          # metriques contextualisees par le service. Les requetes fournies
+          # supposent la metrique http_request_duration_seconds exposee par la
+          # boutique ; $__tags est remplace par les tags du span.
+          tracesToMetrics:
+            datasourceUid: prometheus
+            spanStartTimeShift: '-1m'
+            spanEndTimeShift: '1m'
+            tags:
+              - key: 'service.name'
+                value: 'service'
+            queries:
+              - name: 'Taux de requetes'
+                query: 'sum(rate(http_request_duration_seconds_count{$__tags}[5m]))'
+              - name: 'Taux d erreurs'
+                query: 'sum(rate(http_request_duration_seconds_count{$__tags, status_code=~"5.."}[5m]))'
           # Graphe de services (necessite le metrics-generator de Tempo pour
           # etre alimente ; sinon la vue reste vide, sans erreur bloquante).
           serviceMap:
