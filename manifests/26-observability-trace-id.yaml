@@ -1,0 +1,164 @@
+# =============================================================================
+# Patch observability.py — injection du trace_id dans les logs (sans rebuild)
+# =============================================================================
+# Ce fichier remplace le module observability.py des trois services par une
+# version qui ajoute le trace_id du span courant a chaque ligne de log, SANS
+# reconstruire les images. Le nouveau module est porte par une ConfigMap et
+# monte sur /app/observability.py via un volumeMount subPath.
+#
+# Pourquoi cette approche : elle montre comment surcharger un fichier dans un
+# conteneur sans maitriser la chaine de build de l'image — utile quand on
+# depend d'une image livree par une equipe de developpement. En production, on
+# prefererait integrer ce code a l'image ; ici, le patch par ConfigMap illustre
+# une alternative pragmatique.
+#
+#   kubectl apply -f manifests/26-observability-trace-id.yaml
+#   kubectl rollout restart deployment frontend api worker -n production
+#
+# Le rollout restart est indispensable : monter une ConfigMap dans un pod
+# existant ne suffit pas, il faut recreer les pods pour qu'ils prennent le
+# nouveau montage.
+#
+# PREREQUIS : le paquet opentelemetry-api doit etre present dans l'image (il
+# l'est deja, car les services tournent avec opentelemetry-instrument).
+# =============================================================================
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-patch
+  namespace: production
+data:
+  observability.py: |
+    """
+    common — briques d'observabilité partagées par les trois services.
+
+    Ce module factorise tout ce qui concerne l'observabilité :
+      - la configuration des logs structurés au format JSON (collectés par Alloy -> Loki) ;
+      - la création des métriques Prometheus exposées sur /metrics ;
+      - la réponse standard de l'endpoint /metrics.
+
+    VERSION CHAPITRE OPENTELEMETRY : le JsonFormatter injecte désormais le
+    trace_id (et le span_id) du contexte de trace courant dans chaque ligne de
+    log. C'est ce qui relie un log à sa trace : Loki peut alors, via un
+    derivedField, transformer ce trace_id en lien cliquable vers Tempo, et le
+    bouton de corrélation de Tempo peut isoler LES logs d'UNE requête précise
+    (filterByTraceID) au lieu de tous les logs du service sur une fenêtre de temps.
+    """
+
+    import json
+    import logging
+    import sys
+
+    from opentelemetry import trace
+
+    from prometheus_client import (
+        Counter,
+        Histogram,
+        generate_latest,
+        CONTENT_TYPE_LATEST,
+    )
+
+
+    def make_logger(service_name):
+        """Construit un logger qui émet une ligne JSON par événement sur stdout.
+
+        Chaque ligne contient au minimum l'horodatage, le niveau, le nom du
+        service et le message. Les champs métier (order_id, amount) sont ajoutés
+        quand ils sont fournis via extra={...} lors de l'appel au logger. Le
+        trace_id du span courant est ajouté automatiquement s'il existe.
+        """
+
+        class JsonFormatter(logging.Formatter):
+            def format(self, record):
+                entry = {
+                    "timestamp": self.formatTime(record),
+                    "level": record.levelname,
+                    "service": service_name,
+                    "message": record.getMessage(),
+                }
+                for field in ("order_id", "amount"):
+                    if hasattr(record, field):
+                        entry[field] = getattr(record, field)
+
+                # Injection du contexte de trace OpenTelemetry.
+                # get_current_span() renvoie le span actif dans le contexte courant
+                # (celui que l'instrumentation automatique a ouvert pour la requête).
+                # Si aucun span n'est actif (hors requête), le contexte est invalide
+                # et l'on n'ajoute rien — le log reste valide, simplement sans trace_id.
+                span = trace.get_current_span()
+                ctx = span.get_span_context()
+                if ctx.is_valid:
+                    # Tempo attend le trace_id sur 32 caracteres hexa, le span_id sur 16.
+                    entry["trace_id"] = format(ctx.trace_id, "032x")
+                    entry["span_id"] = format(ctx.span_id, "016x")
+
+                return json.dumps(entry, ensure_ascii=False)
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(JsonFormatter())
+
+        logger = logging.getLogger(service_name)
+        logger.setLevel(logging.INFO)
+        logger.handlers.clear()      # évite les doublons si le module est rechargé
+        logger.addHandler(handler)
+        logger.propagate = False
+        return logger
+
+
+    def make_metrics(service_name):
+        """Crée les deux métriques standard d'un service.
+
+        - un compteur du nombre de requêtes, ventilé par statut (success / failed) ;
+        - un histogramme de la durée de traitement, qui alimentera les quantiles
+          de latence côté Prometheus.
+        """
+        requests = Counter(
+            f"{service_name}_requests_total",
+            "Nombre total de requetes traitees",
+            ["status"],
+        )
+        latency = Histogram(
+            f"{service_name}_request_duration_seconds",
+            "Duree de traitement d'une requete en secondes",
+        )
+        return requests, latency
+
+
+    def metrics_response():
+        """Renvoie l'exposition Prometheus, prête à être servie par Flask."""
+        return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
+
+
+# =============================================================================
+# MONTAGE DANS LES TROIS DEPLOIEMENTS
+# =============================================================================
+# La ConfigMap ci-dessus doit etre montee sur /app/observability.py dans chaque
+# service. On ajoute, sur chaque deploiement (frontend, api, worker) :
+#   - un volume qui reference la ConfigMap ;
+#   - un volumeMount avec subPath, pour remplacer LE SEUL fichier
+#     observability.py sans masquer tout le repertoire /app.
+#
+# Le plus simple est d'appliquer ce patch a chaque deploiement via kubectl patch.
+# Exemple pour le worker (identique pour frontend et api) :
+#
+#   kubectl patch deployment worker -n production --type merge -p '
+#   spec:
+#     template:
+#       spec:
+#         volumes:
+#           - name: observability-patch
+#             configMap:
+#               name: observability-patch
+#         containers:
+#           - name: worker
+#             volumeMounts:
+#               - name: observability-patch
+#                 mountPath: /app/observability.py
+#                 subPath: observability.py
+#   '
+#
+# ATTENTION : le nom du conteneur (ici "worker") doit correspondre a celui du
+# deploiement. Adapter "worker" en "frontend" / "api" pour les deux autres.
+# =============================================================================
