@@ -1,0 +1,17 @@
+# Couche applicative
+Flask==3.1.1
+requests==2.32.3
+
+# Exposition des metriques au format Prometheus
+prometheus-client==0.23.1
+
+# OpenTelemetry — coeur stable epingle (serie 1.x)
+opentelemetry-sdk==1.42.1
+opentelemetry-exporter-otlp==1.42.1
+
+# Paquets d'instrumentation : NON epingles a dessein.
+# Ils suivent un versioning beta (actuellement 0.63bN) qui s'apparie
+# automatiquement au coeur 1.42.1 ; les figer casse la resolution pip.
+opentelemetry-distro
+opentelemetry-instrumentation-flask
+opentelemetry-instrumentation-requests
