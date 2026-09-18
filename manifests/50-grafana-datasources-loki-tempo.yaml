@@ -85,16 +85,19 @@ data:
           # boutique ; $__tags est remplace par les tags du span.
           tracesToMetrics:
             datasourceUid: prometheus
-            spanStartTimeShift: '-1m'
-            spanEndTimeShift: '1m'
-            tags:
-              - key: 'service.name'
-                value: 'service'
+            spanStartTimeShift: '-5m'
+            spanEndTimeShift: '5m'
+            # Pas de $__tags ici : les metriques de la boutique portent le nom
+            # du service dans leur NOM (worker_...), pas dans un label commun
+            # avec le span. Les requetes ciblent donc directement les metriques
+            # du worker. Pour une contextualisation par span, il faudrait des
+            # metriques unifiees avec un label service (voir conventions
+            # semantiques en annexe).
             queries:
-              - name: 'Taux de requetes'
-                query: 'sum(rate(http_request_duration_seconds_count{$__tags}[5m]))'
-              - name: 'Taux d erreurs'
-                query: 'sum(rate(http_request_duration_seconds_count{$__tags, status_code=~"5.."}[5m]))'
+              - name: 'Taux de requetes (worker)'
+                query: 'sum(rate(worker_request_duration_seconds_count[5m]))'
+              - name: 'Taux d erreurs (worker)'
+                query: 'sum(rate(worker_requests_total{status="failed"}[5m]))'
           # Graphe de services (necessite le metrics-generator de Tempo pour
           # etre alimente ; sinon la vue reste vide, sans erreur bloquante).
           serviceMap:
