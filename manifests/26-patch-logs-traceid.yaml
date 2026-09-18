@@ -1,0 +1,118 @@
+# =============================================================================
+# Patch d'exploitation — enrichir les logs du trace_id (sans rebuild)
+# =============================================================================
+# L'image de la boutique expose deja des metriques generiques et des logs JSON,
+# mais SANS trace_id. Ce patch remplace observability.py par une version qui
+# injecte le trace_id / span_id du span courant dans chaque log, pour rendre la
+# correlation log -> trace chirurgicale. Il est monte via ConfigMap + subPath,
+# sans reconstruire l'image — cas realiste d'un enrichissement en exploitation.
+#
+#   kubectl apply -f manifests/26-patch-logs-traceid.yaml
+#   # puis, pour chaque service (worker, api, frontend) :
+#   kubectl patch deployment <svc> -n production --type strategic -p '
+#   spec:
+#     template:
+#       spec:
+#         volumes:
+#           - name: logs-traceid
+#             configMap:
+#               name: logs-traceid-patch
+#         containers:
+#           - name: <svc>
+#             volumeMounts:
+#               - name: logs-traceid
+#                 mountPath: /app/observability.py
+#                 subPath: observability.py
+#   '
+#
+# PREREQUIS : opentelemetry-api present dans l'image (fourni par
+# opentelemetry-instrument, deja utilise pour les traces).
+# =============================================================================
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logs-traceid-patch
+  namespace: production
+data:
+  observability.py: |
+    """
+    common — briques d'observabilité (VERSION ENRICHIE EN EXPLOITATION).
+
+    Identique au module livre dans l'image, MAIS le JsonFormatter injecte le
+    trace_id / span_id du contexte de trace courant dans chaque ligne de log.
+    Cet enrichissement est applique en exploitation, par-dessus l'image, via une
+    ConfigMap montee sur /app/observability.py — sans reconstruire l'image. Il
+    illustre le cas realiste d'une application livree sans lien logs/traces, que
+    l'exploitant enrichit pour rendre la correlation log -> trace chirurgicale
+    (filtrage par trace_id) plutot qu'approximative (par service et fenetre de temps).
+    """
+
+    import json
+    import logging
+    import sys
+
+    from opentelemetry import trace
+
+    from prometheus_client import (
+        Counter,
+        Histogram,
+        generate_latest,
+        CONTENT_TYPE_LATEST,
+    )
+
+
+    def make_logger(service_name):
+        """Logger JSON sur stdout, enrichi du trace_id / span_id du span courant."""
+
+        class JsonFormatter(logging.Formatter):
+            def format(self, record):
+                entry = {
+                    "timestamp": self.formatTime(record),
+                    "level": record.levelname,
+                    "service": service_name,
+                    "message": record.getMessage(),
+                }
+                for field in ("order_id", "amount"):
+                    if hasattr(record, field):
+                        entry[field] = getattr(record, field)
+
+                # Enrichissement : trace_id / span_id du contexte OpenTelemetry.
+                span = trace.get_current_span()
+                ctx = span.get_span_context()
+                if ctx.is_valid:
+                    entry["trace_id"] = format(ctx.trace_id, "032x")
+                    entry["span_id"] = format(ctx.span_id, "016x")
+
+                return json.dumps(entry, ensure_ascii=False)
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(JsonFormatter())
+
+        logger = logging.getLogger(service_name)
+        logger.setLevel(logging.INFO)
+        logger.handlers.clear()
+        logger.addHandler(handler)
+        logger.propagate = False
+        return logger
+
+
+    def make_metrics():
+        """Métriques génériques : http_requests_total{service,status} et
+        http_request_duration_seconds{service}. (Inchange par rapport a l'image.)"""
+        requests = Counter(
+            "http_requests_total",
+            "Nombre total de requetes traitees",
+            ["service", "status"],
+        )
+        latency = Histogram(
+            "http_request_duration_seconds",
+            "Duree de traitement d'une requete en secondes",
+            ["service"],
+        )
+        return requests, latency
+
+
+    def metrics_response():
+        return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
