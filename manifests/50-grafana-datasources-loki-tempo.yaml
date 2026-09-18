@@ -74,30 +74,32 @@ data:
             datasourceUid: loki
             spanStartTimeShift: '-1m'
             spanEndTimeShift: '1m'
-            filterByTraceID: false
+            # true : filtre les logs sur le trace_id du span (correlation
+            # chirurgicale). Suppose que les logs portent le trace_id — c'est le
+            # cas depuis l'enrichissement de observability.py (patch 26).
+            filterByTraceID: true
             filterBySpanID: false
             tags:
               - key: 'service.name'
-                value: 'app'
+                value: 'service'
           # Corrélation Tempo -> Prometheus : depuis un span, lien vers des
-          # metriques contextualisees par le service. Les requetes fournies
-          # supposent la metrique http_request_duration_seconds exposee par la
-          # boutique ; $__tags est remplace par les tags du span.
+          # metriques contextualisees par le service du span. Les metriques
+          # etant desormais GENERIQUES avec un label `service`, le $__tags
+          # fonctionne : il est remplace par service="<service du span>", ce qui
+          # cible automatiquement les metriques du bon service. Le tag ci-dessous
+          # mappe l'attribut service.name du span vers le label service.
           tracesToMetrics:
             datasourceUid: prometheus
             spanStartTimeShift: '-5m'
             spanEndTimeShift: '5m'
-            # Pas de $__tags ici : les metriques de la boutique portent le nom
-            # du service dans leur NOM (worker_...), pas dans un label commun
-            # avec le span. Les requetes ciblent donc directement les metriques
-            # du worker. Pour une contextualisation par span, il faudrait des
-            # metriques unifiees avec un label service (voir conventions
-            # semantiques en annexe).
+            tags:
+              - key: 'service.name'
+                value: 'service'
             queries:
-              - name: 'Taux de requetes (worker)'
-                query: 'sum(rate(worker_request_duration_seconds_count[5m]))'
-              - name: 'Taux d erreurs (worker)'
-                query: 'sum(rate(worker_requests_total{status="failed"}[5m]))'
+              - name: 'Taux de requetes'
+                query: 'sum(rate(http_request_duration_seconds_count{$__tags}[5m]))'
+              - name: 'Taux d erreurs'
+                query: 'sum(rate(http_requests_total{$__tags, status="failed"}[5m]))'
           # Graphe de services (necessite le metrics-generator de Tempo pour
           # etre alimente ; sinon la vue reste vide, sans erreur bloquante).
           serviceMap:
