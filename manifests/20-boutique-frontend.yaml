@@ -18,12 +18,13 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: bloby01/boutique-frontend:v1
+          image: bloby01/boutique-frontend:v2
           imagePullPolicy: Always
           # --- Chapitre Traces : instrumentation OpenTelemetry AUTOMATIQUE ---
           # On surcharge la commande de lancement pour l'envelopper dans
           # "opentelemetry-instrument", qui instrumente Flask et les appels HTTP
-          # sortants SANS modifier le code applicatif.
+          # sortants SANS modifier le code applicatif. Les traces produites sont
+          # envoyees a Alloy (recepteur OTLP), qui les transmet a Tempo.
           command: ["opentelemetry-instrument", "python", "app.py"]
           ports:
             - name: metrics
