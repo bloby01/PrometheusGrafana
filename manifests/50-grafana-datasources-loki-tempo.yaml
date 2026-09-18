@@ -81,7 +81,7 @@ data:
             filterBySpanID: false
             tags:
               - key: 'service.name'
-                value: 'service'
+                value: 'app'
           # Corrélation Tempo -> Prometheus : depuis un span, lien vers des
           # metriques contextualisees par le service du span. Les metriques
           # etant desormais GENERIQUES avec un label `service`, le $__tags
