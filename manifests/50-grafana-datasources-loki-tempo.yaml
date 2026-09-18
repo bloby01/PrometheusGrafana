@@ -77,7 +77,7 @@ data:
             # true : filtre les logs sur le trace_id du span (correlation
             # chirurgicale). Suppose que les logs portent le trace_id — c'est le
             # cas depuis l'enrichissement de observability.py (patch 26).
-            filterByTraceID: true
+            filterByTraceID: false
             filterBySpanID: false
             tags:
               - key: 'service.name'
