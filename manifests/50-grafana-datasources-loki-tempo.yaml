@@ -74,14 +74,19 @@ data:
             datasourceUid: loki
             spanStartTimeShift: '-1m'
             spanEndTimeShift: '1m'
-            # true : filtre les logs sur le trace_id du span (correlation
-            # chirurgicale). Suppose que les logs portent le trace_id — c'est le
-            # cas depuis l'enrichissement de observability.py (patch 26).
+            # filterByTraceID: passer a true pour la correlation chirurgicale par
+            # trace_id (suppose les logs enrichis du trace_id, patch 26). Laisse
+            # a false ici : la correlation se fait alors par le tag + la fenetre
+            # de temps.
             filterByTraceID: false
             filterBySpanID: false
+            # Le tag mappe l'attribut service.name du span vers le label REEL
+            # cote Loki, qui est 'app' (c'est ainsi qu'Alloy etiquette les logs).
+            # Mettre 'service' ne matcherait aucun log : le label Loki est {app=...},
+            # pas {service=...}.
             tags:
               - key: 'service.name'
-                value: 'service'
+                value: 'app'
           # Corrélation Tempo -> Prometheus : depuis un span, lien vers des
           # metriques groupees par service. On n'utilise PAS $__tags : le
           # mapping de l'attribut service.name du span vers le label service
