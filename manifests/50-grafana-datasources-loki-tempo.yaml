@@ -77,29 +77,28 @@ data:
             # true : filtre les logs sur le trace_id du span (correlation
             # chirurgicale). Suppose que les logs portent le trace_id — c'est le
             # cas depuis l'enrichissement de observability.py (patch 26).
-            filterByTraceID: false
+            filterByTraceID: true
             filterBySpanID: false
             tags:
               - key: 'service.name'
-                value: 'app'
+                value: 'service'
           # Corrélation Tempo -> Prometheus : depuis un span, lien vers des
-          # metriques contextualisees par le service du span. Les metriques
-          # etant desormais GENERIQUES avec un label `service`, le $__tags
-          # fonctionne : il est remplace par service="<service du span>", ce qui
-          # cible automatiquement les metriques du bon service. Le tag ci-dessous
-          # mappe l'attribut service.name du span vers le label service.
+          # metriques groupees par service. On n'utilise PAS $__tags : le
+          # mapping de l'attribut service.name du span vers le label service
+          # s'est avere non fiable (service.name est un attribut de RESSOURCE,
+          # pas toujours capte par tracesToMetrics). On groupe donc par le label
+          # `service` : le graphe montre une courbe par service, on identifie
+          # visuellement celui concerne. Robuste et sans dependance a
+          # l'instrumentation.
           tracesToMetrics:
             datasourceUid: prometheus
             spanStartTimeShift: '-5m'
             spanEndTimeShift: '5m'
-            tags:
-              - key: 'service.name'
-                value: 'service'
             queries:
-              - name: 'Taux de requetes'
-                query: 'sum(rate(http_request_duration_seconds_count{$__tags}[5m]))'
-              - name: 'Taux d erreurs'
-                query: 'sum(rate(http_requests_total{$__tags, status="failed"}[5m]))'
+              - name: 'Taux de requetes par service'
+                query: 'sum by(service) (rate(http_request_duration_seconds_count[5m]))'
+              - name: 'Taux d erreurs par service'
+                query: 'sum by(service) (rate(http_requests_total{status="failed"}[5m]))'
           # Graphe de services (necessite le metrics-generator de Tempo pour
           # etre alimente ; sinon la vue reste vide, sans erreur bloquante).
           serviceMap:
